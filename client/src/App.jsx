@@ -2,12 +2,14 @@ import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import AnnotationWorkspace from './components/AnnotationWorkspace';
 import LabelDataViewer from './components/LabelDataViewer';
+import PerformanceDashboard from './components/PerformanceDashboard';
 import { useLabelStore } from './store/useLabelStore';
-import { Save, CheckCircle2 } from 'lucide-react';
+import { Save, CheckCircle2, BarChart2 } from 'lucide-react';
 
 function App() {
   const { setImages, saveLabels, setCurrentImage, currentImageIndex, images, undoLastBox, isSaving } = useLabelStore();
   const [showSaveToast, setShowSaveToast] = useState(false);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
 
   useEffect(() => {
     // Fetch images from backend
@@ -71,7 +73,7 @@ function App() {
       <Sidebar />
 
       {/* 메인 작업 영역 */}
-      <main className="flex-1 flex flex-col relative bg-gray-900 shadow-inner">
+      <main className="flex-1 min-w-0 flex flex-col relative bg-gray-900 shadow-inner">
         <header className="h-14 border-b border-gray-800 bg-gray-950/80 backdrop-blur-md flex items-center px-6 justify-between z-10 shadow-sm">
           <div className="flex items-center gap-3">
             <h1 className="font-bold text-xl tracking-tight text-white flex items-center gap-2">
@@ -88,6 +90,14 @@ function App() {
             </div>
             
             <button 
+              onClick={() => setIsDashboardOpen(true)}
+              className="flex items-center gap-1.5 text-sm font-medium px-4 py-1.5 rounded-full transition-all border border-gray-700 text-gray-300 bg-gray-800 hover:bg-gray-700 hover:text-white"
+            >
+              <BarChart2 size={16} className="text-indigo-400" />
+              성능 분석
+            </button>
+            
+            <button 
               onClick={handleManualSave}
               disabled={isSaving}
               className={`flex items-center gap-2 text-sm font-medium px-5 py-1.5 rounded-full transition-all shadow-md border ${
@@ -102,13 +112,18 @@ function App() {
           </div>
         </header>
         
-        <div className="flex-1 p-6 flex justify-center items-center overflow-auto relative">
+        <div className="flex-1 min-w-0 p-6 flex justify-center items-center overflow-auto relative">
           <AnnotationWorkspace />
         </div>
       </main>
 
       {/* 우측 사이드바: 텍스트 포맷 뷰어 */}
       <LabelDataViewer />
+
+      {/* 성능 분석 대시보드 모달 */}
+      {isDashboardOpen && (
+        <PerformanceDashboard onClose={() => setIsDashboardOpen(false)} currentClasses={useLabelStore.getState().classes} />
+      )}
     </div>
   );
 }
