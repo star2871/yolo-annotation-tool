@@ -64,6 +64,22 @@ node_modules/
 
 # dotenv environment variables file
 .env
+.env.*
 
 # dataconnect generated files
 .dataconnect
+
+# Build output (Vite, React)
+dist
+dist-ssr
+build
+
+# AI model cache (transformers.js)
+.cache
+
+# Uploaded files (multer)
+uploads/
+
+# OS generated files
+.DS_Store
+Thumbs.db

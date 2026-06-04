@@ -1,0 +1,30 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id       Int     @id @default(autoincrement())
+  email    String  @unique
+  password String
+  images   Image[]
+}
+
+model Image {
+  id       Int     @id @default(autoincrement())
+  filePath String
+  userId   Int
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  labels   Label[]
+}
+
+model Label {
+  id      Int    @id @default(autoincrement())
+  data    String
+  imageId Int
+  image   Image  @relation(fields: [imageId], references: [id], onDelete: Cascade)
+}

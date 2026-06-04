@@ -5,7 +5,14 @@ const path = require('path');
 const multer = require('multer');
 const { preloadModel, runInference } = require('./ai_engine');
 const { evaluatePerformance } = require('./metrics');
+require('dotenv').config();
+const { PrismaClient } = require('@prisma/client');
+const { Pool } = require('pg');
+const { PrismaPg } = require('@prisma/adapter-pg');
 
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 const app = express();
 const PORT = 3001;
 
@@ -37,43 +44,78 @@ const upload = multer({ storage });
 // Serve static images so frontend can load them via http://localhost:3001/images/filename.jpg
 app.use('/images', express.static(IMAGES_DIR));
 
+// Default User init
+let defaultUser;
+async function initializeDb() {
+  defaultUser = await prisma.user.findUnique({ where: { email: 'test@example.com' } });
+  if (!defaultUser) {
+    defaultUser = await prisma.user.create({
+      data: {
+        email: 'test@example.com',
+        password: 'dummy_password'
+      }
+    });
+  }
+}
+
 // API 1: Get list of images with label status
-app.get('/api/images', (req, res) => {
-  fs.readdir(IMAGES_DIR, (err, files) => {
-    if (err) {
-      console.error('Error reading images directory:', err);
-      return res.status(500).json({ error: 'Failed to read images directory' });
-    }
-    
-    // Filter only image files
-    const imageFiles = files.filter(file => {
+app.get('/api/images', async (req, res) => {
+  try {
+    // 1. Sync filesystem with DB
+    const files = fs.readdirSync(IMAGES_DIR).filter(file => {
       const ext = path.extname(file).toLowerCase();
       return ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].includes(ext);
     });
-
-    // Check if label exists for each image
-    const imagesWithStatus = imageFiles.map(file => {
-      const labelFile = file.replace(/\.[^/.]+$/, "") + ".txt";
-      const isLabeled = fs.existsSync(path.join(LABELS_DIR, labelFile));
-      return {
-        name: file,
-        isLabeled
-      };
+    
+    for (const file of files) {
+      let existing = await prisma.image.findFirst({ where: { filePath: file, userId: defaultUser.id } });
+      if (!existing) {
+        existing = await prisma.image.create({ data: { filePath: file, userId: defaultUser.id } });
+        
+        // sync label
+        const labelFile = file.replace(/\.[^/.]+$/, "") + ".txt";
+        const labelPath = path.join(LABELS_DIR, labelFile);
+        if (fs.existsSync(labelPath)) {
+          const content = fs.readFileSync(labelPath, 'utf8');
+          await prisma.label.create({ data: { data: content, imageId: existing.id } });
+        }
+      }
+    }
+    
+    // 2. Fetch from DB
+    const images = await prisma.image.findMany({
+      where: { userId: defaultUser.id },
+      include: { labels: true }
     });
-
-    res.json(imagesWithStatus);
-  });
+    
+    const result = images.map(img => ({
+      name: img.filePath,
+      isLabeled: img.labels.length > 0
+    }));
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching images:', error);
+    res.status(500).json({ error: 'Failed to read images directory' });
+  }
 });
 
 // API 1.5: Delete an image and its label
-app.delete('/api/images/:filename', (req, res) => {
+app.delete('/api/images/:filename', async (req, res) => {
   const filename = req.params.filename;
-  const imagePath = path.join(IMAGES_DIR, filename);
-  const labelPath = path.join(LABELS_DIR, filename.replace(/\.[^/.]+$/, "") + ".txt");
-
   try {
+    // Delete from DB
+    const image = await prisma.image.findFirst({ where: { filePath: filename, userId: defaultUser.id } });
+    if (image) {
+      await prisma.image.delete({ where: { id: image.id } });
+    }
+
+    // Delete from FS
+    const imagePath = path.join(IMAGES_DIR, filename);
+    const labelPath = path.join(LABELS_DIR, filename.replace(/\.[^/.]+$/, "") + ".txt");
     if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
     if (fs.existsSync(labelPath)) fs.unlinkSync(labelPath);
+    
     res.json({ success: true, message: 'Deleted successfully' });
   } catch (error) {
     console.error('Error deleting image:', error);
@@ -82,47 +124,89 @@ app.delete('/api/images/:filename', (req, res) => {
 });
 
 // API 2: Save YOLO label
-app.post('/api/labels', (req, res) => {
+app.post('/api/labels', async (req, res) => {
   const { filename, content } = req.body;
-
   if (!filename || content === undefined) {
     return res.status(400).json({ error: 'Filename and content are required' });
   }
 
-  const filePath = path.join(LABELS_DIR, filename);
+  const baseName = filename.replace(/\.txt$/, '');
 
-  // Path traversal prevention
-  if (path.dirname(path.normalize(filePath)) !== LABELS_DIR) {
-    return res.status(400).json({ error: 'Invalid filename' });
-  }
-
-  fs.writeFile(filePath, content, 'utf8', (err) => {
-    if (err) {
-      console.error('Error writing label file:', err);
-      return res.status(500).json({ error: 'Failed to save label' });
+  try {
+    // Find image in DB
+    const images = await prisma.image.findMany({ where: { userId: defaultUser.id } });
+    const image = images.find(img => img.filePath.replace(/\.[^/.]+$/, "") === baseName);
+    
+    if (image) {
+      const existingLabel = await prisma.label.findFirst({ where: { imageId: image.id } });
+      if (existingLabel) {
+        await prisma.label.update({ where: { id: existingLabel.id }, data: { data: content } });
+      } else {
+        await prisma.label.create({ data: { data: content, imageId: image.id } });
+      }
     }
+
+    // Also save to filesystem for AI metrics compatibility
+    const filePath = path.join(LABELS_DIR, filename);
+    fs.writeFileSync(filePath, content, 'utf8');
+
     res.json({ success: true, message: 'Label saved successfully' });
-  });
+  } catch (error) {
+    console.error('Error writing label file:', error);
+    res.status(500).json({ error: 'Failed to save label' });
+  }
 });
 
 // API 3: Get YOLO label to load existing boxes
-app.get('/api/labels/:filename', (req, res) => {
-  const filePath = path.join(LABELS_DIR, req.params.filename);
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'Label not found' });
+app.get('/api/labels/:filename', async (req, res) => {
+  const baseName = req.params.filename.replace(/\.txt$/, '');
+  
+  try {
+    const images = await prisma.image.findMany({ where: { userId: defaultUser.id } });
+    const image = images.find(img => img.filePath.replace(/\.[^/.]+$/, "") === baseName);
+    
+    let labelContent = null;
+    if (image) {
+      const label = await prisma.label.findFirst({ where: { imageId: image.id } });
+      if (label) labelContent = label.data;
+    }
+
+    if (labelContent !== null) {
+      return res.send(labelContent);
+    }
+    
+    // Fallback to fs
+    const filePath = path.join(LABELS_DIR, req.params.filename);
+    if (fs.existsSync(filePath)) {
+      return res.send(fs.readFileSync(filePath, 'utf8'));
+    }
+    
+    res.status(404).json({ error: 'Label not found' });
+  } catch (error) {
+    console.error('Error reading label:', error);
+    res.status(500).json({ error: 'Failed to read label' });
   }
-  fs.readFile(filePath, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ error: 'Failed to read label' });
-    res.send(data);
-  });
 });
 
 // API 4: Upload images
-app.post('/api/upload', upload.array('images', 1000), (req, res) => {
+app.post('/api/upload', upload.array('images', 1000), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No files uploaded' });
   }
-  res.json({ success: true, count: req.files.length });
+  
+  try {
+    for (const file of req.files) {
+      const filename = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      const existing = await prisma.image.findFirst({ where: { filePath: filename, userId: defaultUser.id } });
+      if (!existing) {
+        await prisma.image.create({ data: { filePath: filename, userId: defaultUser.id } });
+      }
+    }
+    res.json({ success: true, count: req.files.length });
+  } catch (error) {
+    console.error('Upload DB error:', error);
+    res.status(500).json({ error: 'Failed to save to database' });
+  }
 });
 
 // API 5: Run AI Inference
@@ -168,6 +252,9 @@ app.listen(PORT, async () => {
   console.log(`🚀 YoloTrace Backend is running on http://localhost:${PORT}`);
   console.log(`📂 Images Directory: ${IMAGES_DIR}`);
   console.log(`📂 Labels Directory: ${LABELS_DIR}`);
+  
+  // Initialize Database
+  await initializeDb();
   
   // Preload AI Model
   await preloadModel();
