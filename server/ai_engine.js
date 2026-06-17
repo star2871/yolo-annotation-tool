@@ -49,8 +49,28 @@ async function runInference(imagePath, prompt = "", threshold = 0.05) {
   const imgW = dimensions.width;
   const imgH = dimensions.height;
 
+  // Simple translation dictionary for common Korean terms to improve zero-shot detection
+  const translationMap = {
+    '이물질': 'debris, trash, dirt, stain, garbage',
+    '하수구': 'drain, sewer, grate, manhole',
+    '쓰레기': 'trash, garbage, waste',
+    '사람': 'person, human',
+    '자동차': 'car, vehicle',
+    '모자': 'hat, helmet, cap',
+    '안전모': 'hard hat, safety helmet'
+  };
+
+  let translatedPrompt = prompt;
+  if (translatedPrompt) {
+    for (const [ko, en] of Object.entries(translationMap)) {
+      if (translatedPrompt.includes(ko)) {
+        translatedPrompt = translatedPrompt.replace(new RegExp(ko, 'g'), en);
+      }
+    }
+  }
+
   // Parse prompt into an array of labels. If empty, fallback to a default object like 'person'
-  const candidate_labels = prompt ? prompt.split(',').map(s => s.trim()) : ['object'];
+  const candidate_labels = translatedPrompt ? translatedPrompt.split(',').map(s => s.trim()) : ['object'];
 
   // 2. Run inference
   let results;
